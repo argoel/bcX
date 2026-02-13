@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Plus,
   Pencil,
@@ -6,9 +7,12 @@ import {
   ToggleLeft,
   ToggleRight,
   X,
+  User,
+  CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
-import { mockBills, mockAccounts } from "../data/mock";
-import type { Bill } from "../types";
+import { mockBills, mockAccounts, mockPayees } from "../data/mock";
+import type { Bill, Payee } from "../types";
 
 function formatCurrency(n: number) {
   return new Intl.NumberFormat("en-US", {
@@ -20,6 +24,7 @@ function formatCurrency(n: number) {
 const emptyBill: Omit<Bill, "id"> = {
   name: "",
   payee: "",
+  payeeId: "",
   amount: 0,
   frequency: "monthly",
   nextDueDate: "",
@@ -42,13 +47,20 @@ const categoryOptions = [
 
 export default function Bills() {
   const [bills, setBills] = useState<Bill[]>(mockBills);
+  const [payees] = useState<Payee[]>(mockPayees);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyBill);
+  const [payeeSearch, setPayeeSearch] = useState("");
+  const [showPayeeDropdown, setShowPayeeDropdown] = useState(false);
+
+  const verifiedPayees = payees.filter((p) => p.status === "verified");
 
   function openAdd() {
     setEditingId(null);
     setForm(emptyBill);
+    setPayeeSearch("");
+    setShowPayeeDropdown(false);
     setShowForm(true);
   }
 
@@ -57,11 +69,23 @@ export default function Bills() {
     const { id: _id, ...rest } = bill;
     void _id;
     setForm(rest);
+    setPayeeSearch("");
+    setShowPayeeDropdown(false);
     setShowForm(true);
   }
 
+  function selectPayee(p: Payee) {
+    setForm((f) => ({ ...f, payee: p.name, payeeId: p.id }));
+    setPayeeSearch("");
+    setShowPayeeDropdown(false);
+  }
+
+  function clearPayee() {
+    setForm((f) => ({ ...f, payee: "", payeeId: "" }));
+  }
+
   function saveBill() {
-    if (!form.name || !form.payee || !form.amount || !form.nextDueDate) return;
+    if (!form.name || !form.payeeId || !form.amount || !form.nextDueDate) return;
     if (editingId) {
       setBills((prev) =>
         prev.map((b) => (b.id === editingId ? { ...form, id: editingId } : b))
@@ -97,6 +121,34 @@ export default function Bills() {
     const acc = mockAccounts.find((a) => a.id === id);
     return acc ? `${acc.bankName} ${acc.accountNumber}` : "Unknown";
   };
+
+  const payeeName = (bill: Bill) => {
+    if (bill.payeeId) {
+      const p = payees.find((pp) => pp.id === bill.payeeId);
+      return p ? p.name : bill.payee;
+    }
+    return bill.payee;
+  };
+
+  const payeeBank = (bill: Bill) => {
+    if (bill.payeeId) {
+      const p = payees.find((pp) => pp.id === bill.payeeId);
+      return p ? `${p.bankName} ••${p.accountNumber.slice(-4)}` : null;
+    }
+    return null;
+  };
+
+  const selectedPayee = form.payeeId
+    ? payees.find((p) => p.id === form.payeeId)
+    : null;
+
+  const filteredPayees = payeeSearch
+    ? verifiedPayees.filter(
+        (p) =>
+          p.name.toLowerCase().includes(payeeSearch.toLowerCase()) ||
+          (p.nickname?.toLowerCase().includes(payeeSearch.toLowerCase()) ?? false)
+      )
+    : verifiedPayees;
 
   const totalMonthly = bills
     .filter((b) => b.status === "active")
@@ -156,7 +208,14 @@ export default function Bills() {
                 <td className="px-5 py-3">
                   <div>
                     <p className="font-medium">{bill.name}</p>
-                    <p className="text-xs text-gray-400">{bill.payee}</p>
+                    <p className="text-xs text-gray-400">
+                      {payeeName(bill)}
+                      {payeeBank(bill) && (
+                        <span className="ml-1.5 text-gray-300">
+                          &middot; {payeeBank(bill)}
+                        </span>
+                      )}
+                    </p>
                   </div>
                 </td>
                 <td className="px-5 py-3 font-semibold">
@@ -233,8 +292,8 @@ export default function Bills() {
       {/* Add/Edit Modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
               <h3 className="font-semibold text-gray-900">
                 {editingId ? "Edit Bill" : "Add New Bill"}
               </h3>
@@ -246,7 +305,7 @@ export default function Bills() {
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
               <Field label="Bill Name">
                 <input
                   type="text"
@@ -258,17 +317,121 @@ export default function Bills() {
                   className="input"
                 />
               </Field>
+
+              {/* ── Payee selector ── */}
               <Field label="Payee">
-                <input
-                  type="text"
-                  value={form.payee}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, payee: e.target.value }))
-                  }
-                  placeholder="e.g. ConEdison"
-                  className="input"
-                />
+                {selectedPayee ? (
+                  <div className="border border-indigo-200 bg-indigo-50 rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">
+                          {selectedPayee.name.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">
+                            {selectedPayee.name}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {selectedPayee.bankName} &middot; ••
+                            {selectedPayee.accountNumber.slice(-4)} &middot;{" "}
+                            <span className="capitalize">
+                              {selectedPayee.accountType}
+                            </span>
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2
+                          size={14}
+                          className="text-emerald-500"
+                        />
+                        <button
+                          onClick={clearPayee}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={payeeSearch}
+                      onChange={(e) => {
+                        setPayeeSearch(e.target.value);
+                        setShowPayeeDropdown(true);
+                      }}
+                      onFocus={() => setShowPayeeDropdown(true)}
+                      placeholder="Search verified payees..."
+                      className="input"
+                    />
+                    {showPayeeDropdown && (
+                      <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
+                        {filteredPayees.length > 0 ? (
+                          filteredPayees.map((p) => (
+                            <button
+                              key={p.id}
+                              onClick={() => selectPayee(p)}
+                              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left border-b border-gray-50 last:border-0"
+                            >
+                              <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-[10px] shrink-0">
+                                {p.name.charAt(0)}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-gray-900 truncate">
+                                  {p.name}
+                                  {p.nickname && (
+                                    <span className="text-gray-400 font-normal ml-1">
+                                      ({p.nickname})
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-gray-400">
+                                  {p.bankName} &middot; ••
+                                  {p.accountNumber.slice(-4)}
+                                </p>
+                              </div>
+                              <CheckCircle2
+                                size={12}
+                                className="text-emerald-400 shrink-0"
+                              />
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-4 py-6 text-center space-y-2">
+                            <User
+                              size={20}
+                              className="mx-auto text-gray-300"
+                            />
+                            <p className="text-xs text-gray-400">
+                              No matching payees found.
+                            </p>
+                            <Link
+                              to="/payees"
+                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+                            >
+                              <Plus size={12} /> Add a new payee
+                              <ExternalLink size={10} />
+                            </Link>
+                          </div>
+                        )}
+                        <div className="border-t border-gray-100 px-4 py-2.5 bg-gray-50">
+                          <Link
+                            to="/payees"
+                            className="inline-flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+                          >
+                            <User size={12} /> Manage all payees
+                            <ExternalLink size={10} />
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </Field>
+
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Amount ($)">
                   <input
@@ -365,7 +528,7 @@ export default function Bills() {
               </label>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
               <button
                 onClick={() => setShowForm(false)}
                 className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg"
@@ -374,7 +537,8 @@ export default function Bills() {
               </button>
               <button
                 onClick={saveBill}
-                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                disabled={!form.name || !form.payeeId || !form.amount || !form.nextDueDate}
+                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {editingId ? "Save Changes" : "Add Bill"}
               </button>
