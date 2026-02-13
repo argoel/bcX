@@ -1,4 +1,4 @@
-import type { BankAccount, Transaction, Bill } from "../types";
+import type { BankAccount, Transaction, Bill, Payee } from "../types";
 
 export const mockAccounts: BankAccount[] = [
   {
@@ -75,13 +75,24 @@ export const mockTransactions: Transaction[] = [
   { id: "tx-25", accountId: "acc-4", date: "2026-01-27", description: "Flight Booking", category: "Travel", amount: -389.0, merchant: "Delta Airlines", status: "posted" },
 ];
 
+export const mockPayees: Payee[] = [
+  { id: "payee-1", name: "Landlord LLC", nickname: "Rent", accountNumber: "7892345610", routingNumber: "021000021", bankName: "JPMorgan Chase", accountType: "checking", email: "billing@landlordllc.com", status: "verified", verifiedAt: "2025-11-20", createdAt: "2025-11-20", lastPaymentDate: "2026-02-01", totalPayments: 4 },
+  { id: "payee-2", name: "ConEdison", nickname: "Electric", accountNumber: "3301987654", routingNumber: "021001088", bankName: "Bank of New York Mellon", accountType: "checking", phone: "1-800-752-6633", status: "verified", verifiedAt: "2025-11-22", createdAt: "2025-11-22", lastPaymentDate: "2026-02-08", totalPayments: 3 },
+  { id: "payee-3", name: "Comcast", nickname: "Internet", accountNumber: "5509871234", routingNumber: "031100157", bankName: "PNC Bank", accountType: "checking", phone: "1-800-934-6489", status: "verified", verifiedAt: "2025-12-01", createdAt: "2025-12-01", lastPaymentDate: "2026-02-02", totalPayments: 3 },
+  { id: "payee-4", name: "Verizon Wireless", nickname: "Phone", accountNumber: "2210456789", routingNumber: "021200339", bankName: "Citibank", accountType: "checking", phone: "1-800-922-0204", status: "verified", verifiedAt: "2025-12-05", createdAt: "2025-12-05", lastPaymentDate: "2026-02-05", totalPayments: 3 },
+  { id: "payee-5", name: "Netflix Inc", accountNumber: "8876543210", routingNumber: "121000358", bankName: "Bank of America", accountType: "checking", status: "verified", verifiedAt: "2025-12-10", createdAt: "2025-12-10", lastPaymentDate: "2026-02-09", totalPayments: 3 },
+  { id: "payee-6", name: "Spotify USA", accountNumber: "4432109876", routingNumber: "121042882", bankName: "Wells Fargo", accountType: "checking", status: "verified", verifiedAt: "2025-12-15", createdAt: "2025-12-15", lastPaymentDate: "2026-02-01", totalPayments: 2 },
+  { id: "payee-7", name: "Planet Fitness", nickname: "Gym", accountNumber: "6654321098", routingNumber: "026009593", bankName: "TD Bank", accountType: "checking", status: "verified", verifiedAt: "2026-01-02", createdAt: "2026-01-02", lastPaymentDate: "2026-02-07", totalPayments: 2 },
+  { id: "payee-8", name: "Geico Insurance", nickname: "Car Insurance", accountNumber: "1198765432", routingNumber: "052001633", bankName: "SunTrust Bank", accountType: "checking", email: "payments@geico.com", status: "verified", verifiedAt: "2026-01-10", createdAt: "2026-01-10", lastPaymentDate: "2026-01-15", totalPayments: 1 },
+];
+
 export const mockBills: Bill[] = [
-  { id: "bill-1", name: "Rent", payee: "Landlord LLC", amount: 2100, frequency: "monthly", nextDueDate: "2026-03-01", autoPay: true, payFromAccountId: "acc-1", category: "Housing", status: "active" },
-  { id: "bill-2", name: "Electric", payee: "ConEdison", amount: 124, frequency: "monthly", nextDueDate: "2026-03-08", autoPay: true, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
-  { id: "bill-3", name: "Internet", payee: "Comcast", amount: 69.99, frequency: "monthly", nextDueDate: "2026-03-02", autoPay: true, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
-  { id: "bill-4", name: "Phone", payee: "Verizon", amount: 85, frequency: "monthly", nextDueDate: "2026-03-05", autoPay: false, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
-  { id: "bill-5", name: "Netflix", payee: "Netflix", amount: 15.99, frequency: "monthly", nextDueDate: "2026-03-09", autoPay: true, payFromAccountId: "acc-4", category: "Entertainment", status: "active" },
-  { id: "bill-6", name: "Spotify", payee: "Spotify", amount: 9.99, frequency: "monthly", nextDueDate: "2026-03-01", autoPay: true, payFromAccountId: "acc-4", category: "Entertainment", status: "active" },
-  { id: "bill-7", name: "Gym", payee: "Planet Fitness", amount: 49.99, frequency: "monthly", nextDueDate: "2026-03-07", autoPay: true, payFromAccountId: "acc-4", category: "Health", status: "active" },
-  { id: "bill-8", name: "Car Insurance", payee: "Geico", amount: 312, frequency: "quarterly", nextDueDate: "2026-04-15", autoPay: false, payFromAccountId: "acc-1", category: "Insurance", status: "active" },
+  { id: "bill-1", name: "Rent", payee: "Landlord LLC", payeeId: "payee-1", amount: 2100, frequency: "monthly", nextDueDate: "2026-03-01", autoPay: true, payFromAccountId: "acc-1", category: "Housing", status: "active" },
+  { id: "bill-2", name: "Electric", payee: "ConEdison", payeeId: "payee-2", amount: 124, frequency: "monthly", nextDueDate: "2026-03-08", autoPay: true, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
+  { id: "bill-3", name: "Internet", payee: "Comcast", payeeId: "payee-3", amount: 69.99, frequency: "monthly", nextDueDate: "2026-03-02", autoPay: true, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
+  { id: "bill-4", name: "Phone", payee: "Verizon Wireless", payeeId: "payee-4", amount: 85, frequency: "monthly", nextDueDate: "2026-03-05", autoPay: false, payFromAccountId: "acc-1", category: "Utilities", status: "active" },
+  { id: "bill-5", name: "Netflix", payee: "Netflix Inc", payeeId: "payee-5", amount: 15.99, frequency: "monthly", nextDueDate: "2026-03-09", autoPay: true, payFromAccountId: "acc-4", category: "Entertainment", status: "active" },
+  { id: "bill-6", name: "Spotify", payee: "Spotify USA", payeeId: "payee-6", amount: 9.99, frequency: "monthly", nextDueDate: "2026-03-01", autoPay: true, payFromAccountId: "acc-4", category: "Entertainment", status: "active" },
+  { id: "bill-7", name: "Gym", payee: "Planet Fitness", payeeId: "payee-7", amount: 49.99, frequency: "monthly", nextDueDate: "2026-03-07", autoPay: true, payFromAccountId: "acc-4", category: "Health", status: "active" },
+  { id: "bill-8", name: "Car Insurance", payee: "Geico Insurance", payeeId: "payee-8", amount: 312, frequency: "quarterly", nextDueDate: "2026-04-15", autoPay: false, payFromAccountId: "acc-1", category: "Insurance", status: "active" },
 ];

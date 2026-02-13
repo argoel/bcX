@@ -4,12 +4,14 @@ import {
   Building2,
   ArrowLeftRight,
   Receipt,
+  Users,
 } from "lucide-react";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/accounts", icon: Building2, label: "Accounts" },
   { to: "/transactions", icon: ArrowLeftRight, label: "Transactions" },
+  { to: "/payees", icon: Users, label: "Payees" },
   { to: "/bills", icon: Receipt, label: "Bills" },
 ];
 
