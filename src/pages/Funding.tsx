@@ -12,7 +12,7 @@ import { Link } from "react-router-dom";
 import { useStore } from "../state/store";
 import { fmtUsd, toCents } from "../lib/money";
 import { grossPerPeriodCents } from "../lib/payroll";
-import { initiateAchDebit } from "../services/root";
+import { applyTransfer, rootClient } from "../services/root";
 
 export default function Funding() {
   const { state, update } = useStore();
@@ -54,23 +54,27 @@ export default function Funding() {
       setError("Enter an amount greater than zero.");
       return;
     }
+    const subaccount = state.root.subaccounts[employer.rootSubaccountId];
+    if (!subaccount) {
+      setError("Subaccount not found.");
+      return;
+    }
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 600));
-    let caught: string | null = null;
-    update((draft) => {
-      try {
-        initiateAchDebit(draft.root, {
+    try {
+      const out = await rootClient.initiateAchDebit(
+        {
           subaccountId: employer.rootSubaccountId,
           employerBankTokenId: primary.id,
           amountCents,
           memo: `myPay prefunding — ${employer.companyName}`,
-        });
-      } catch (err) {
-        caught = (err as Error).message;
-      }
-    });
-    if (caught) setError(caught);
-    else setAmount(0);
+        },
+        { subaccount, bank: primary },
+      );
+      update((draft) => applyTransfer(draft.root, out));
+      setAmount(0);
+    } catch (err) {
+      setError((err as Error).message);
+    }
     setSubmitting(false);
   }
 

@@ -21,15 +21,77 @@ myPay is used by the **payroll admin** at an employer. The flow:
 6. **Run payroll** — one click disburses every employee's net paycheck from the
    subaccount via ACH / RTP, all through Root.
 
-All state is kept in `localStorage` and all Root interactions are routed
-through a single client (`src/services/root.ts`) so the SDK / API calls can be
-swapped for real sandbox calls later.
-
 ## Getting started
 
 ```bash
 npm install
+cp .env.example .env.local   # default is mock mode — no credentials needed
 npm run dev
+```
+
+Open the URL Vite prints (usually `http://localhost:5173`).
+
+## Mock vs. live Root sandbox
+
+myPay talks to Root through a single client in
+[`src/services/root.ts`](src/services/root.ts).  Two implementations ship:
+
+| Mode                    | `VITE_USE_MOCK_ROOT` | Behavior                                                                                     |
+| ----------------------- | :------------------: | -------------------------------------------------------------------------------------------- |
+| **Client-side mock**    | `true` *(default)*   | Deterministic local simulation, timed settlement, nothing leaves the browser.                |
+| **Live Root sandbox**   | `false`              | All calls go to `/api/root/*` — Vite proxies to Root's sandbox and injects the secret key.   |
+
+### Wiring up live mode
+
+1. Put your sandbox credentials in `.env.local`:
+   ```env
+   VITE_USE_MOCK_ROOT=false
+   ROOT_SANDBOX_API_KEY=root_sk_sandbox_your_key_here
+   ROOT_SANDBOX_BASE_URL=https://sandbox.api.useroot.com
+   ```
+   `ROOT_SANDBOX_API_KEY` is intentionally **not** prefixed with `VITE_` — it
+   lives only in the Vite dev-server process and is never bundled into the
+   browser JavaScript.
+
+2. Restart `npm run dev`.
+
+3. The Vite dev-server (see [`vite.config.ts`](vite.config.ts)) forwards every
+   request to `/api/root/*` to `${ROOT_SANDBOX_BASE_URL}/v1/*` and attaches
+   `Authorization: Bearer ${ROOT_SANDBOX_API_KEY}` along the way.
+
+### Production
+
+The dev proxy only runs in `vite dev`.  For a deployed myPay, replace it with a
+real backend that performs the same header injection — a thin Express server,
+a Vercel/Netlify function at `/api/root/[...path].ts`, or a Cloudflare Worker
+all work.  `services/root.ts` does not change.
+
+### Schema caveat
+
+The exact request/response shapes in `apiClient` (payload field names, HTTP
+status conventions, webhook events) are **best-guess placeholders** based on
+Root's public description of the platform.  Once you have access to Root's
+reference docs, adjust the `apiClient` methods in `src/services/root.ts`
+— no other file needs to change.
+
+## Architecture
+
+```
+src/
+├── components/       Layout, RootLinkModal (simulates the Root JS SDK UI),
+│                     AppProvider, RequireAuth
+├── pages/            Login, Dashboard, Employees, CompanyBank, Funding,
+│                     Payroll, RootActivity
+├── services/
+│   └── root.ts       RootClient interface + mock & api implementations,
+│                     plus applySubaccount/applyBankToken/applyTransfer
+│                     helpers that commit a ClientResult to a RootState.
+├── state/
+│   └── store.ts      localStorage-backed app store with settlement ticker
+│                     (mock mode only).
+├── lib/              money + payroll math utilities
+└── types/            Employer, Employee, RootSubaccount, RootBankToken,
+                      RootTransfer, PayrollRun, RootActivityEntry
 ```
 
 ## Tech
@@ -38,4 +100,3 @@ npm run dev
 - Tailwind CSS
 - React Router
 - Lucide React (icons)
-- Mocked Root sandbox (swap `src/services/root.ts` for real calls)

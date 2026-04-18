@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../state/store";
 import RootLinkModal from "../components/RootLinkModal";
-import { linkBankAccount } from "../services/root";
+import { applyBankToken, pushActivity, rootClient } from "../services/root";
 
 export default function CompanyBank() {
   const { state, update } = useStore();
@@ -25,7 +25,7 @@ export default function CompanyBank() {
     if (!confirm("Unlink this company bank account?")) return;
     update((draft) => {
       delete draft.root.bankTokens[id];
-      draft.root.activity.unshift({
+      pushActivity(draft.root, {
         id: `act_${Math.random().toString(36).slice(2, 10)}`,
         at: new Date().toISOString(),
         endpoint: "DELETE /v1/bank-accounts/:id",
@@ -35,14 +35,14 @@ export default function CompanyBank() {
     });
   }
 
-  function onLinked(result: {
+  async function onLinked(result: {
     bankName: string;
     accountType: "checking" | "savings";
     last4: string;
     achDebitAuthorized: boolean;
   }) {
-    update((draft) => {
-      linkBankAccount(draft.root, {
+    try {
+      const out = await rootClient.linkBankAccount({
         ownerType: "employer",
         ownerId: employer.id,
         bankName: result.bankName,
@@ -50,7 +50,10 @@ export default function CompanyBank() {
         last4: result.last4,
         achDebitAuthorized: result.achDebitAuthorized,
       });
-    });
+      update((draft) => applyBankToken(draft.root, out));
+    } catch (err) {
+      alert(`Link failed: ${(err as Error).message}`);
+    }
     setOpen(false);
   }
 

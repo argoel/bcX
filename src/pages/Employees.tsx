@@ -14,7 +14,7 @@ import {
 import { useStore } from "../state/store";
 import { fmtUsd } from "../lib/money";
 import { grossPerPeriodCents } from "../lib/payroll";
-import { linkBankAccount } from "../services/root";
+import { applyBankToken, rootClient } from "../services/root";
 import RootLinkModal from "../components/RootLinkModal";
 import type { Employee, PayFrequency } from "../types";
 
@@ -61,7 +61,7 @@ export default function Employees() {
     });
   }
 
-  function onBankLinked(
+  async function onBankLinked(
     employee: Employee,
     result: {
       bankName: string;
@@ -69,8 +69,8 @@ export default function Employees() {
       last4: string;
     },
   ) {
-    update((draft) => {
-      const token = linkBankAccount(draft.root, {
+    try {
+      const out = await rootClient.linkBankAccount({
         ownerType: "employee",
         ownerId: employee.id,
         bankName: result.bankName,
@@ -78,12 +78,17 @@ export default function Employees() {
         last4: result.last4,
         achDebitAuthorized: false,
       });
-      const target = draft.employees.find((e) => e.id === employee.id);
-      if (target) {
-        target.rootBankToken = token.id;
-        target.bankDisplay = `${result.bankName} ••${result.last4}`;
-      }
-    });
+      update((draft) => {
+        applyBankToken(draft.root, out);
+        const target = draft.employees.find((e) => e.id === employee.id);
+        if (target) {
+          target.rootBankToken = out.resource.id;
+          target.bankDisplay = `${result.bankName} ••${result.last4}`;
+        }
+      });
+    } catch (err) {
+      alert(`Link failed: ${(err as Error).message}`);
+    }
     setLinkFor(null);
   }
 

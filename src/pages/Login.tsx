@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { useStore } from "../state/store";
-import { createSubaccount } from "../services/root";
+import { applySubaccount, rootClient } from "../services/root";
 import type { Employer } from "../types";
 
 /**
@@ -41,15 +41,20 @@ export default function Login() {
       createdAt: new Date().toISOString(),
     };
 
-    // Simulated OAuth handshake + Root subaccount provisioning.
+    // Simulated OAuth handshake; then provision a Root subaccount.
     await new Promise((r) => setTimeout(r, 900));
-    update((draft) => {
-      const sub = createSubaccount(draft.root, employer);
-      draft.employer = { ...employer, rootSubaccountId: sub.id };
-    });
-
-    setBusy(false);
-    nav("/", { replace: true });
+    try {
+      const result = await rootClient.createSubaccount({ employer });
+      update((draft) => {
+        applySubaccount(draft.root, result);
+        draft.employer = { ...employer, rootSubaccountId: result.resource.id };
+      });
+      nav("/", { replace: true });
+    } catch (err) {
+      alert(`Could not create Root subaccount: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
