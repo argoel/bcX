@@ -1,200 +1,243 @@
 import { Link } from "react-router-dom";
 import {
-  TrendingUp,
-  TrendingDown,
+  Users,
+  Banknote,
   Wallet,
+  CalendarCheck,
   ArrowRight,
-  Clock,
-  CreditCard,
+  CheckCircle2,
+  Circle,
+  Activity,
+  TrendingUp,
 } from "lucide-react";
-import { mockAccounts, mockTransactions, mockBills } from "../data/mock";
-
-function formatCurrency(n: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(Math.abs(n));
-}
+import { useStore } from "../state/store";
+import { fmtUsd, nextFriday } from "../lib/money";
+import { grossPerPeriodCents } from "../lib/payroll";
 
 export default function Dashboard() {
-  const totalBalance = mockAccounts.reduce((s, a) => s + a.balance, 0);
-  const recentTx = [...mockTransactions]
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, 5);
-  const upcomingBills = [...mockBills]
-    .filter((b) => b.status === "active")
-    .sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate))
-    .slice(0, 5);
-  const monthlyBillTotal = mockBills
-    .filter((b) => b.status === "active")
-    .reduce((s, b) => s + b.amount, 0);
+  const { state } = useStore();
+  const { employer, employees, payrollRuns } = state;
+  if (!employer) return null;
 
-  const accountName = (id: string) =>
-    mockAccounts.find((a) => a.id === id)?.bankName ?? "Unknown";
+  const sub = state.root.subaccounts[employer.rootSubaccountId];
+  const employerBank = Object.values(state.root.bankTokens).find(
+    (b) => b.ownerType === "employer" && b.achDebitAuthorized,
+  );
+  const employeesWithBank = employees.filter((e) => e.rootBankToken);
+  const lastRun = payrollRuns[0];
+
+  const nextPayrollGross = employees
+    .filter((e) => e.rootBankToken)
+    .reduce((sum, e) => sum + grossPerPeriodCents(e), 0);
+
+  // Progress checklist
+  const steps = [
+    { id: "signin", label: "Sign in with Google Workspace", done: true },
+    {
+      id: "employees",
+      label: "Add employees to the HCM",
+      done: employees.length > 0,
+      to: "/employees",
+    },
+    {
+      id: "emp-bank",
+      label: "Link bank accounts for each employee",
+      done: employees.length > 0 && employeesWithBank.length === employees.length,
+      to: "/employees",
+    },
+    {
+      id: "co-bank",
+      label: "Link your company bank (with ACH debit authorization)",
+      done: !!employerBank,
+      to: "/company-bank",
+    },
+    {
+      id: "fund",
+      label: "Prefund the Root subaccount",
+      done: !!sub && sub.balanceCents > 0,
+      to: "/funding",
+    },
+    {
+      id: "run",
+      label: "Run this week's payroll",
+      done: (lastRun?.status === "complete" || lastRun?.status === "partial"),
+      to: "/payroll",
+    },
+  ];
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <h2 className="text-2xl font-bold">Dashboard</h2>
+    <div className="p-6 max-w-6xl mx-auto space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold">
+          Welcome back, {employer.admin.name.split(" ")[0]}
+        </h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Payroll for{" "}
+          <span className="font-medium text-gray-700">
+            {employer.companyName}
+          </span>{" "}
+          — pay period ending {nextFriday()}
+        </p>
+      </div>
 
-      {/* Summary cards */}
+      {/* KPI row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard
-          icon={<Wallet size={20} />}
-          label="Net Balance"
-          value={formatCurrency(totalBalance)}
-          accent="text-indigo-600 bg-indigo-50"
+        <Kpi
+          icon={<Wallet size={18} />}
+          tint="text-indigo-600 bg-indigo-50"
+          label="Subaccount balance"
+          value={sub ? fmtUsd(sub.balanceCents) : "—"}
+          sub={
+            sub && sub.pendingInCents > 0
+              ? `${fmtUsd(sub.pendingInCents)} pending in`
+              : sub && sub.pendingOutCents > 0
+                ? `${fmtUsd(sub.pendingOutCents)} pending out`
+                : "on Root sandbox"
+          }
         />
-        <SummaryCard
-          icon={<CreditCard size={20} />}
-          label="Accounts Connected"
-          value={String(mockAccounts.length)}
-          accent="text-emerald-600 bg-emerald-50"
+        <Kpi
+          icon={<Users size={18} />}
+          tint="text-emerald-600 bg-emerald-50"
+          label="Employees"
+          value={String(employees.length)}
+          sub={`${employeesWithBank.length} bank-linked`}
         />
-        <SummaryCard
-          icon={<TrendingDown size={20} />}
-          label="Monthly Bills"
-          value={formatCurrency(monthlyBillTotal)}
-          accent="text-orange-600 bg-orange-50"
+        <Kpi
+          icon={<Banknote size={18} />}
+          tint="text-sky-600 bg-sky-50"
+          label="Company bank"
+          value={
+            employerBank
+              ? `${employerBank.bankName} ••${employerBank.last4}`
+              : "Not linked"
+          }
+          sub={employerBank ? "ACH debit authorized" : "Link to begin"}
         />
-        <SummaryCard
-          icon={<TrendingUp size={20} />}
-          label="Pending Transactions"
-          value={String(
-            mockTransactions.filter((t) => t.status === "pending").length
-          )}
-          accent="text-sky-600 bg-sky-50"
+        <Kpi
+          icon={<TrendingUp size={18} />}
+          tint="text-purple-600 bg-purple-50"
+          label="Next pay-period gross"
+          value={fmtUsd(nextPayrollGross)}
+          sub={`${employeesWithBank.length} paychecks`}
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent transactions */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h3 className="font-semibold text-gray-800">
-              Recent Transactions
-            </h3>
-            <Link
-              to="/transactions"
-              className="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-            >
-              View all <ArrowRight size={14} />
-            </Link>
-          </div>
-          <ul className="divide-y divide-gray-50">
-            {recentTx.map((tx) => (
-              <li
-                key={tx.id}
-                className="flex items-center justify-between px-5 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{tx.merchant}</p>
-                  <p className="text-xs text-gray-500">
-                    {tx.date} &middot; {accountName(tx.accountId)}
-                  </p>
-                </div>
-                <span
-                  className={`text-sm font-semibold whitespace-nowrap ${
-                    tx.amount >= 0 ? "text-emerald-600" : "text-gray-900"
-                  }`}
-                >
-                  {tx.amount >= 0 ? "+" : "-"}
-                  {formatCurrency(tx.amount)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        {/* Upcoming bills */}
-        <section className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h3 className="font-semibold text-gray-800">Upcoming Bills</h3>
-            <Link
-              to="/bills"
-              className="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-            >
-              Manage <ArrowRight size={14} />
-            </Link>
-          </div>
-          <ul className="divide-y divide-gray-50">
-            {upcomingBills.map((bill) => (
-              <li
-                key={bill.id}
-                className="flex items-center justify-between px-5 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{bill.name}</p>
-                  <p className="text-xs text-gray-500 flex items-center gap-1">
-                    <Clock size={12} />
-                    Due {bill.nextDueDate} &middot;{" "}
-                    {bill.autoPay ? "Auto-pay" : "Manual"}
-                  </p>
-                </div>
-                <span className="text-sm font-semibold text-gray-900 whitespace-nowrap">
-                  {formatCurrency(bill.amount)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      </div>
-
-      {/* Account balances */}
+      {/* Getting started checklist */}
       <section className="bg-white rounded-xl shadow-sm border border-gray-200">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <h3 className="font-semibold text-gray-800">Account Balances</h3>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-800">Getting started</h3>
           <Link
-            to="/accounts"
-            className="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+            to="/root-activity"
+            className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
           >
-            Manage accounts <ArrowRight size={14} />
+            <Activity size={12} /> Root activity
           </Link>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
-          {mockAccounts.map((acc) => (
-            <div key={acc.id} className="px-5 py-4">
-              <p className="text-sm text-gray-500">
-                {acc.bankLogo} {acc.bankName}
-              </p>
-              <p className="text-xs text-gray-400 mb-1">
-                {acc.accountType.charAt(0).toUpperCase() +
-                  acc.accountType.slice(1)}{" "}
-                {acc.accountNumber}
-              </p>
-              <p
-                className={`text-lg font-bold ${
-                  acc.balance >= 0 ? "text-gray-900" : "text-red-600"
-                }`}
+        <ul className="divide-y divide-gray-50">
+          {steps.map((s) => (
+            <li
+              key={s.id}
+              className="flex items-center gap-3 px-5 py-3 text-sm"
+            >
+              {s.done ? (
+                <CheckCircle2 size={18} className="text-emerald-500 shrink-0" />
+              ) : (
+                <Circle size={18} className="text-gray-300 shrink-0" />
+              )}
+              <span
+                className={
+                  s.done
+                    ? "text-gray-400 line-through"
+                    : "text-gray-800 font-medium"
+                }
               >
-                {acc.balance < 0 && "-"}
-                {formatCurrency(acc.balance)}
-              </p>
-            </div>
+                {s.label}
+              </span>
+              {!s.done && s.to && (
+                <Link
+                  to={s.to}
+                  className="ml-auto text-xs text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
+                >
+                  Go <ArrowRight size={12} />
+                </Link>
+              )}
+            </li>
           ))}
-        </div>
+        </ul>
       </section>
+
+      {/* Quick actions */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <QuickAction
+          to="/employees"
+          icon={<Users size={18} />}
+          title="Add or manage employees"
+          desc="Update salaries, link payout accounts"
+        />
+        <QuickAction
+          to="/funding"
+          icon={<Wallet size={18} />}
+          title="Prefund subaccount"
+          desc="ACH debit pull from your bank"
+        />
+        <QuickAction
+          to="/payroll"
+          icon={<CalendarCheck size={18} />}
+          title="Run this week's payroll"
+          desc="Disburse paychecks in one click"
+        />
+      </div>
     </div>
   );
 }
 
-function SummaryCard({
+function Kpi({
   icon,
+  tint,
   label,
   value,
-  accent,
+  sub,
 }: {
   icon: React.ReactNode;
+  tint: string;
   label: string;
   value: string;
-  accent: string;
+  sub: string;
 }) {
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
-      <div className={`rounded-lg p-2.5 ${accent}`}>{icon}</div>
-      <div>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div className="flex items-center gap-3">
+        <div className={`rounded-lg p-2 ${tint}`}>{icon}</div>
         <p className="text-xs text-gray-500 uppercase tracking-wide">{label}</p>
-        <p className="text-xl font-bold">{value}</p>
       </div>
+      <p className="text-xl font-bold mt-3">{value}</p>
+      <p className="text-xs text-gray-400 mt-0.5">{sub}</p>
     </div>
+  );
+}
+
+function QuickAction({
+  to,
+  icon,
+  title,
+  desc,
+}: {
+  to: string;
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex items-start gap-3 hover:border-indigo-300 hover:shadow-md transition-all"
+    >
+      <div className="rounded-lg p-2 bg-indigo-50 text-indigo-600">{icon}</div>
+      <div className="flex-1 min-w-0">
+        <p className="font-medium text-sm">{title}</p>
+        <p className="text-xs text-gray-500">{desc}</p>
+      </div>
+      <ArrowRight size={14} className="text-gray-300" />
+    </Link>
   );
 }
