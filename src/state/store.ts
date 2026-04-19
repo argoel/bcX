@@ -1,37 +1,39 @@
 /* ────────────────────────────────────────────────────────────────────────
    state/store.ts
 
-   Tiny global app store.  myPay has no backend — everything the payroll
-   admin sees lives in localStorage keyed under "mypay.state.v1".  We
-   snapshot on every mutation, and periodically advance Root transfers
-   toward settlement so the UI feels alive.
+   Multi-tenant app store.  Every employer (identified by their Google
+   Workspace domain) gets a `Tenant` slice under `tenants[domain]`.
+   Multiple admins from the same domain share the same tenant — signing
+   in is idempotent per-domain.
+
+   • `state.session.domain` points at the currently-active tenant.
+   • Logout = clearing `session.domain`.  Tenant data stays, so anyone
+     from the same domain (in this browser) can sign back in and land
+     in the same console.
+   • Root resources (subaccounts, bank tokens, payees, transfers, the
+     activity log) are shared across tenants — each is keyed/filtered by
+     subaccountId where relevant.
    ──────────────────────────────────────────────────────────────────────── */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import type {
-  Employer,
-  Employee,
-  PayrollRun,
-} from "../types";
+import type { Session, Tenant } from "../types";
 import {
   emptyRootState,
   settleDueTransfers,
   type RootState,
 } from "../services/root";
 
-const STORAGE_KEY = "mypay.state.v1";
+const STORAGE_KEY = "mypay.state.v2";
 
 export interface AppState {
-  employer: Employer | null;
-  employees: Employee[];
-  payrollRuns: PayrollRun[];
+  session: Session;
+  tenants: Record<string, Tenant>;
   root: RootState;
 }
 
 const emptyState = (): AppState => ({
-  employer: null,
-  employees: [],
-  payrollRuns: [],
+  session: { domain: null, adminEmail: null },
+  tenants: {},
   root: emptyRootState(),
 });
 
@@ -39,14 +41,14 @@ function load(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return emptyState();
-    const parsed = JSON.parse(raw) as AppState;
+    const parsed = JSON.parse(raw) as Partial<AppState>;
     return {
-      employer: parsed.employer ?? null,
-      employees: parsed.employees ?? [],
-      payrollRuns: parsed.payrollRuns ?? [],
+      session: parsed.session ?? { domain: null, adminEmail: null },
+      tenants: parsed.tenants ?? {},
       root: {
         subaccounts: parsed.root?.subaccounts ?? {},
         bankTokens: parsed.root?.bankTokens ?? {},
+        payees: parsed.root?.payees ?? {},
         transfers: parsed.root?.transfers ?? [],
         activity: parsed.root?.activity ?? [],
       },
@@ -68,6 +70,26 @@ function cloneState(s: AppState): AppState {
   return JSON.parse(JSON.stringify(s));
 }
 
+/* ---- Helpers --------------------------------------------------------- */
+
+/** Returns the active tenant (or null if no session / unknown domain). */
+export function getActiveTenant(state: AppState): Tenant | null {
+  if (!state.session.domain) return null;
+  return state.tenants[state.session.domain] ?? null;
+}
+
+/** Mutate the active tenant inside an `update(draft)` callback. */
+export function withActiveTenant(
+  draft: AppState,
+  fn: (tenant: Tenant) => void,
+): void {
+  const domain = draft.session.domain;
+  if (!domain) return;
+  const tenant = draft.tenants[domain];
+  if (!tenant) return;
+  fn(tenant);
+}
+
 /* ---- Context --------------------------------------------------------- */
 
 export interface Store {
@@ -76,7 +98,10 @@ export interface Store {
    *  re-render.  Uses a functional setState internally so concurrent
    *  background ticks (settlement) can't overwrite your changes. */
   update(fn: (draft: AppState) => void): void;
-  reset(): void;
+  /** Clear the entire app state including all tenants.  Mostly for
+   *  the demo reset button — normal sign-out should only clear the
+   *  session. */
+  hardReset(): void;
 }
 
 const StoreCtx = createContext<Store | null>(null);
@@ -87,8 +112,10 @@ export function useStore(): Store {
   return ctx;
 }
 
-export function useAppState() {
-  return useStore().state;
+/** Convenience hook — returns the active tenant (or null). */
+export function useActiveTenant(): Tenant | null {
+  const { state } = useStore();
+  return getActiveTenant(state);
 }
 
 /* ---- Provider hook --------------------------------------------------- */
@@ -105,7 +132,7 @@ export function useStoreValue(): Store {
     });
   }, []);
 
-  const reset = useCallback(() => {
+  const hardReset = useCallback(() => {
     const fresh = emptyState();
     save(fresh);
     setState(fresh);
@@ -121,28 +148,38 @@ export function useStoreValue(): Store {
         const settled = settleDueTransfers(draft.root);
         if (settled.length === 0) return prev;
 
-        // Reconcile payroll run line items with settled disbursements.
+        // Reconcile payroll run line items across all tenants.
         for (const t of settled) {
           if (!t.payrollRunId || !t.employeeId) continue;
-          const run = draft.payrollRuns.find((r) => r.id === t.payrollRunId);
-          if (!run) continue;
-          const li = run.lineItems.find((l) => l.employeeId === t.employeeId);
-          if (li && li.status === "disbursing") li.status = "paid";
+          for (const tenant of Object.values(draft.tenants)) {
+            const run = tenant.payrollRuns.find(
+              (r) => r.id === t.payrollRunId,
+            );
+            if (!run) continue;
+            const li = run.lineItems.find(
+              (l) => l.employeeId === t.employeeId,
+            );
+            if (li && li.status === "disbursing") li.status = "paid";
+          }
         }
 
         // Mark runs complete / partial when every line item is terminal.
-        for (const run of draft.payrollRuns) {
-          if (run.status !== "running") continue;
-          const allSettled = run.lineItems.every(
-            (l) =>
-              l.status === "paid" ||
-              l.status === "skipped" ||
-              l.status === "failed",
-          );
-          if (allSettled) {
-            const anyFailed = run.lineItems.some((l) => l.status === "failed");
-            run.status = anyFailed ? "partial" : "complete";
-            run.completedAt = new Date().toISOString();
+        for (const tenant of Object.values(draft.tenants)) {
+          for (const run of tenant.payrollRuns) {
+            if (run.status !== "running") continue;
+            const allSettled = run.lineItems.every(
+              (l) =>
+                l.status === "paid" ||
+                l.status === "skipped" ||
+                l.status === "failed",
+            );
+            if (allSettled) {
+              const anyFailed = run.lineItems.some(
+                (l) => l.status === "failed",
+              );
+              run.status = anyFailed ? "partial" : "complete";
+              run.completedAt = new Date().toISOString();
+            }
           }
         }
 
@@ -154,7 +191,10 @@ export function useStoreValue(): Store {
     return () => clearInterval(id);
   }, []);
 
-  return useMemo(() => ({ state, update, reset }), [state, update, reset]);
+  return useMemo(
+    () => ({ state, update, hardReset }),
+    [state, update, hardReset],
+  );
 }
 
 export { StoreCtx };

@@ -16,17 +16,39 @@
 export interface Employer {
   id: string;
   companyName: string;
-  /** The Google Workspace primary domain, e.g. "acme.com" */
+  /** The Google Workspace primary domain, e.g. "acme.com" — also the
+   *  tenant key in the app state.  Every user who signs in with an
+   *  email at this domain shares the same employer record. */
   gsuiteDomain: string;
-  /** Admin who signed in via GSuite */
-  admin: {
-    email: string;
-    name: string;
-    picture: string;
-  };
   /** Root subaccount id provisioned for this employer */
   rootSubaccountId: string;
   createdAt: string;
+}
+
+/** A user who has signed in to myPay as a payroll admin.  Multiple admins
+ *  can be active under the same employer (domain). */
+export interface Admin {
+  email: string;
+  name: string;
+  picture: string;
+  firstSignedInAt: string;
+  lastSignedInAt: string;
+}
+
+/** Session identifies which tenant (by domain) and which admin is
+ *  currently signed in on this device / browser. */
+export interface Session {
+  domain: string | null;
+  adminEmail: string | null;
+}
+
+/** Per-employer slice of app state — created the first time someone
+ *  from a given domain signs in. */
+export interface Tenant {
+  employer: Employer;
+  admins: Admin[];
+  employees: Employee[];
+  payrollRuns: PayrollRun[];
 }
 
 /* ---- Employees ------------------------------------------------------- */
@@ -35,6 +57,9 @@ export type PayFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly";
 
 export interface Employee {
   id: string;
+  /** ID of the backing Root payee resource.  Present when the employee
+   *  was synced from Root or created via Root; absent during migration. */
+  rootPayeeId?: string;
   firstName: string;
   lastName: string;
   email: string;
@@ -60,6 +85,20 @@ export interface RootSubaccount {
   pendingInCents: number;
   /** Pending outgoing disbursements in cents */
   pendingOutCents: number;
+}
+
+/** A payee (employee) as stored on Root.  This is the source of truth
+ *  for who gets paid out of a subaccount; myPay's `Employee` is a local
+ *  HCM enrichment (title, salary, pay frequency) referencing one. */
+export interface RootPayee {
+  id: string;
+  subaccountId: string;
+  name: string;
+  email: string;
+  /** Linked bank-account token, if the payee has completed the Root
+   *  Link flow. */
+  bankTokenId?: string;
+  createdAt: string;
 }
 
 /** A tokenized bank account stored on Root. */

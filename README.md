@@ -8,11 +8,19 @@ powered by the [Root](https://www.useroot.com) platform
 
 myPay is used by the **payroll admin** at an employer. The flow:
 
-1. **Sign in with Google Workspace** — creates the employer account and, under
-   the hood, provisions a dedicated myPay **subaccount on Root** (sandbox).
-2. **Add employees** one-by-one in the built-in HCM.
+1. **Sign in with Google Workspace** — the email's **domain** identifies the
+   tenant.  The first admin from `@acme.com` provisions a new Root subaccount
+   for Acme; every subsequent admin with an `@acme.com` email joins the same
+   tenant (same subaccount, same employees).  **Logout** just clears the
+   current session — teammates can keep working.
+2. **Employees = Root payees.**  On login myPay calls `GET /v1/payees` for
+   the tenant's subaccount and reconciles with the local HCM.  Anything that
+   already lives in your Root sandbox shows up as an employee automatically.
+   Conversely, every employee you add in myPay is created as a payee on Root
+   via `POST /v1/payees`.
 3. **Link each employee's bank account** through the Root JS SDK — myPay never
-   touches raw account numbers, just Root bank-account tokens.
+   touches raw account numbers, just Root bank-account tokens.  The bank is
+   attached to the payee so it follows them across sessions.
 4. **Link the employer's bank account** through the same Root SDK — this
    authorizes an **ACH debit pull** from the employer's operating account into
    the myPay Root subaccount.
