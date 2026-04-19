@@ -9,19 +9,20 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore } from "../state/store";
 import { fmtUsd, toCents } from "../lib/money";
 import { grossPerPeriodCents } from "../lib/payroll";
 import { applyTransfer, rootClient } from "../services/root";
 
 export default function Funding() {
   const { state, update } = useStore();
+  const tenant = useActiveTenant();
   const [amount, setAmount] = useState<number>(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const employer = state.employer;
-  if (!employer) return null;
+  if (!tenant) return null;
+  const { employer, employees } = tenant;
   const sub = state.root.subaccounts[employer.rootSubaccountId];
 
   const employerBanks = Object.values(state.root.bankTokens).filter(
@@ -33,7 +34,7 @@ export default function Funding() {
   const primary = employerBanks[0];
 
   // Suggested amount = sum of next period's gross for bank-linked employees.
-  const suggestedCents = state.employees
+  const suggestedCents = employees
     .filter((e) => e.rootBankToken)
     .reduce((sum, e) => sum + grossPerPeriodCents(e), 0);
 
@@ -55,7 +56,7 @@ export default function Funding() {
       return;
     }
     // Re-capture to keep TS narrowing through the async await points.
-    const { rootSubaccountId, companyName } = employer!;
+    const { rootSubaccountId, companyName } = employer;
     const subaccount = state.root.subaccounts[rootSubaccountId];
     if (!subaccount) {
       setError("Subaccount not found.");

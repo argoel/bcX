@@ -2,12 +2,20 @@ import { useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { useStore } from "../state/store";
-import { applySubaccount, rootClient } from "../services/root";
-import type { Employer } from "../types";
+import { applySubaccount, rootClient, upsertPayees } from "../services/root";
+import type { Admin, Employer, Employee, Tenant } from "../types";
 
 /**
- * Simulated "Sign in with Google Workspace" gate.  Collects the admin's
- * email + company name, then provisions the employer + Root subaccount.
+ * Simulated "Sign in with Google Workspace" gate.
+ *
+ * Tenants are identified by Google Workspace domain — every teammate who
+ * signs in with `@acme.com` joins the same tenant.  The first sign-in
+ * under a domain provisions a new Root subaccount and creates the
+ * employer record.  Subsequent sign-ins (from anyone in that domain)
+ * simply attach as another admin on the same tenant.
+ *
+ * After login we pull payees from Root for the tenant's subaccount so
+ * HCM stays in sync with the source of truth.
  */
 export default function Login() {
   const { state, update } = useStore();
@@ -17,41 +25,139 @@ export default function Login() {
   const [company, setCompany] = useState("Acme Inc.");
   const [name, setName] = useState("Alex Admin");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (state.employer) return <Navigate to="/" replace />;
+  if (state.session.domain) return <Navigate to="/" replace />;
+
+  const domain = (email.split("@")[1] ?? "").toLowerCase();
+  const existing = domain ? state.tenants[domain] : undefined;
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
-    if (!email || !company || !name) return;
-    setBusy(true);
+    setError(null);
+    if (!email || !name) return;
+    if (!domain) {
+      setError("Please use a work email with a valid domain.");
+      return;
+    }
 
-    const id = `emp_${Date.now()}`;
-    const employer: Employer = {
-      id,
-      companyName: company,
-      gsuiteDomain: email.split("@")[1] ?? "example.com",
-      admin: {
-        email,
+    setBusy(true);
+    const now = new Date().toISOString();
+    const adminRec: Admin = {
+      email,
+      name,
+      picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(
         name,
-        picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(
-          name,
-        )}&background=4f46e5&color=fff&bold=true`,
-      },
-      rootSubaccountId: "",
-      createdAt: new Date().toISOString(),
+      )}&background=4f46e5&color=fff&bold=true`,
+      firstSignedInAt: now,
+      lastSignedInAt: now,
     };
 
-    // Simulated OAuth handshake; then provision a Root subaccount.
-    await new Promise((r) => setTimeout(r, 900));
     try {
-      const result = await rootClient.createSubaccount({ employer });
-      update((draft) => {
-        applySubaccount(draft.root, result);
-        draft.employer = { ...employer, rootSubaccountId: result.resource.id };
-      });
+      let subaccountId: string;
+
+      if (existing) {
+        // Someone from this domain has signed in before — join the
+        // existing tenant.  Update the admin list (add or refresh).
+        subaccountId = existing.employer.rootSubaccountId;
+        update((draft) => {
+          const t = draft.tenants[domain]!;
+          const idx = t.admins.findIndex((a) => a.email === email);
+          if (idx >= 0) {
+            t.admins[idx] = { ...t.admins[idx], name, lastSignedInAt: now };
+          } else {
+            t.admins.push(adminRec);
+          }
+          draft.session = { domain, adminEmail: email };
+        });
+      } else {
+        // First admin from this domain — create tenant + subaccount.
+        if (!company) {
+          setError("Please enter your company name.");
+          setBusy(false);
+          return;
+        }
+        // Simulated GSuite OAuth round-trip.
+        await new Promise((r) => setTimeout(r, 700));
+        const employerId = `emp_${Date.now().toString(36)}`;
+        const draftEmployer: Employer = {
+          id: employerId,
+          companyName: company,
+          gsuiteDomain: domain,
+          rootSubaccountId: "",
+          createdAt: now,
+        };
+        const subResult = await rootClient.createSubaccount({
+          employer: draftEmployer,
+        });
+        subaccountId = subResult.resource.id;
+        const tenant: Tenant = {
+          employer: { ...draftEmployer, rootSubaccountId: subaccountId },
+          admins: [adminRec],
+          employees: [],
+          payrollRuns: [],
+        };
+        update((draft) => {
+          draft.tenants[domain] = tenant;
+          draft.session = { domain, adminEmail: email };
+          applySubaccount(draft.root, subResult);
+        });
+      }
+
+      // Sync payees from Root → tenant.employees (both modes).
+      try {
+        const list = await rootClient.listPayees({ subaccountId });
+        update((draft) => {
+          upsertPayees(draft.root, list.payees);
+          draft.root.activity.unshift(list.activity);
+          if (draft.root.activity.length > 200)
+            draft.root.activity.length = 200;
+          const t = draft.tenants[domain];
+          if (!t) return;
+          for (const p of list.payees) {
+            const hit = t.employees.find(
+              (e) => e.rootPayeeId === p.id || e.email === p.email,
+            );
+            if (hit) {
+              // Backfill rootPayeeId / bank token / email if needed.
+              hit.rootPayeeId = p.id;
+              if (p.bankTokenId && !hit.rootBankToken) {
+                hit.rootBankToken = p.bankTokenId;
+                const bt = draft.root.bankTokens[p.bankTokenId];
+                if (bt) hit.bankDisplay = `${bt.bankName} ••${bt.last4}`;
+              }
+              if (!hit.email) hit.email = p.email;
+              continue;
+            }
+            // Unknown payee — create a minimal Employee record for it.
+            const [firstName, ...rest] = p.name.split(" ");
+            const newEmp: Employee = {
+              id: `emp_${Math.random().toString(36).slice(2, 10)}`,
+              rootPayeeId: p.id,
+              firstName: firstName ?? p.name,
+              lastName: rest.join(" "),
+              email: p.email,
+              jobTitle: "Imported from Root",
+              annualSalary: 0,
+              payFrequency: "weekly",
+              createdAt: p.createdAt,
+            };
+            if (p.bankTokenId) {
+              newEmp.rootBankToken = p.bankTokenId;
+              const bt = draft.root.bankTokens[p.bankTokenId];
+              if (bt) newEmp.bankDisplay = `${bt.bankName} ••${bt.last4}`;
+            }
+            t.employees.push(newEmp);
+          }
+        });
+      } catch (err) {
+        // Non-fatal: user can still use the app, sync later.
+        console.warn("[login] initial payee sync failed", err);
+      }
+
       nav("/", { replace: true });
     } catch (err) {
-      alert(`Could not create Root subaccount: ${(err as Error).message}`);
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -101,15 +207,34 @@ export default function Login() {
                   className="input"
                 />
               </Field>
-              <Field label="Company name">
-                <input
-                  type="text"
-                  value={company}
-                  onChange={(e) => setCompany(e.target.value)}
-                  className="input"
-                />
-              </Field>
+              {!existing && (
+                <Field label="Company name">
+                  <input
+                    type="text"
+                    value={company}
+                    onChange={(e) => setCompany(e.target.value)}
+                    className="input"
+                  />
+                </Field>
+              )}
             </div>
+
+            {existing ? (
+              <div className="rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-900">
+                <span className="font-semibold">{existing.employer.companyName}</span>{" "}
+                is already on myPay. You'll join as an additional admin —
+                same Root subaccount, same employees.
+              </div>
+            ) : domain ? (
+              <div className="rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-2 text-xs text-indigo-900">
+                First admin for <span className="font-mono">{domain}</span>.
+                We'll provision a new Root subaccount for this company.
+              </div>
+            ) : null}
+
+            {error && (
+              <p className="text-xs text-red-600">{error}</p>
+            )}
 
             <button
               type="submit"
@@ -122,13 +247,20 @@ export default function Login() {
                 <GoogleLogo />
               )}
               <span className="text-sm font-medium text-gray-700">
-                {busy ? "Creating your account…" : "Continue with Google"}
+                {busy
+                  ? existing
+                    ? "Signing you in…"
+                    : "Creating your account…"
+                  : "Continue with Google"}
               </span>
             </button>
 
             <p className="text-[11px] text-gray-400 text-center leading-relaxed">
-              By continuing you authorize myPay to provision a subaccount on
-              the Root sandbox and act as payroll agent for your company.
+              By continuing you authorize myPay to{" "}
+              {existing
+                ? "add you as an admin on this employer's"
+                : "provision a subaccount on the"}{" "}
+              Root sandbox and act as payroll agent for your company.
             </p>
           </div>
 

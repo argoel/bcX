@@ -28,6 +28,7 @@ import type {
   Employer,
   RootActivityEntry,
   RootBankToken,
+  RootPayee,
   RootSubaccount,
   RootTransfer,
 } from "../types";
@@ -37,6 +38,7 @@ import type {
 export interface RootState {
   subaccounts: Record<string, RootSubaccount>;
   bankTokens: Record<string, RootBankToken>;
+  payees: Record<string, RootPayee>;
   transfers: RootTransfer[];
   activity: RootActivityEntry[];
 }
@@ -44,6 +46,7 @@ export interface RootState {
 export const emptyRootState = (): RootState => ({
   subaccounts: {},
   bankTokens: {},
+  payees: {},
   transfers: [],
   activity: [],
 });
@@ -103,6 +106,14 @@ export interface DisburseInput {
   memo: string;
   rail?: "ach" | "rtp";
 }
+export interface CreatePayeeInput {
+  subaccountId: string;
+  name: string;
+  email: string;
+}
+export interface ListPayeesInput {
+  subaccountId: string;
+}
 
 /** Every call returns the created/changed resource plus an activity entry
  *  so the caller can commit both to the store atomically. */
@@ -116,7 +127,12 @@ export interface ClientResult<T> {
 
 export interface RootClient {
   createSubaccount(input: CreateSubaccountInput): Promise<ClientResult<RootSubaccount>>;
-  linkBankAccount(input: LinkBankInput): Promise<ClientResult<RootBankToken>>;
+  linkBankAccount(
+    input: LinkBankInput,
+    /** When linking a bank for an employee, the owner is a payee id —
+     *  we also update the payee to reference the new bank token. */
+    context?: { payee?: RootPayee },
+  ): Promise<ClientResult<RootBankToken> & { payee?: RootPayee }>;
   initiateAchDebit(
     input: DebitInput,
     snapshot: { subaccount: RootSubaccount; bank: RootBankToken },
@@ -125,6 +141,10 @@ export interface RootClient {
     input: DisburseInput,
     snapshot: { subaccount: RootSubaccount; bank: RootBankToken },
   ): Promise<ClientResult<RootTransfer>>;
+  createPayee(input: CreatePayeeInput): Promise<ClientResult<RootPayee>>;
+  listPayees(
+    input: ListPayeesInput,
+  ): Promise<{ payees: RootPayee[]; activity: RootActivityEntry }>;
 }
 
 /* ================================================================== */
@@ -132,6 +152,33 @@ export interface RootClient {
 /* ================================================================== */
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/* In-memory "Root backend" that outlives myPay logouts so cross-tenant
+ * state (payees, bank tokens) simulates how real Root state would behave.
+ * Persisted separately from the app store. */
+const MOCK_BACKEND_KEY = "mypay.mock-root-backend.v1";
+interface MockBackend {
+  payees: Record<string, RootPayee>;
+  bankTokens: Record<string, RootBankToken>;
+}
+function loadMockBackend(): MockBackend {
+  try {
+    const raw = localStorage.getItem(MOCK_BACKEND_KEY);
+    if (!raw) return { payees: {}, bankTokens: {} };
+    const parsed = JSON.parse(raw);
+    return { payees: parsed.payees ?? {}, bankTokens: parsed.bankTokens ?? {} };
+  } catch {
+    return { payees: {}, bankTokens: {} };
+  }
+}
+function saveMockBackend(b: MockBackend) {
+  try {
+    localStorage.setItem(MOCK_BACKEND_KEY, JSON.stringify(b));
+  } catch {
+    /* quota — ignore */
+  }
+}
+const mockBackend = loadMockBackend();
 
 const mockClient: RootClient = {
   async createSubaccount({ employer }) {
@@ -155,7 +202,7 @@ const mockClient: RootClient = {
     };
   },
 
-  async linkBankAccount(input) {
+  async linkBankAccount(input, context) {
     await delay(500);
     const token: RootBankToken = {
       id: newId("btok"),
@@ -167,8 +214,20 @@ const mockClient: RootClient = {
       achDebitAuthorized: input.achDebitAuthorized,
       createdAt: new Date().toISOString(),
     };
+    mockBackend.bankTokens[token.id] = token;
+    // If linking for an employee payee, attach the bank token to the payee.
+    let updatedPayee: RootPayee | undefined;
+    if (input.ownerType === "employee" && context?.payee) {
+      const stored = mockBackend.payees[context.payee.id];
+      if (stored) {
+        stored.bankTokenId = token.id;
+        updatedPayee = { ...stored };
+      }
+    }
+    saveMockBackend(mockBackend);
     return {
       resource: token,
+      payee: updatedPayee,
       activity: activity({
         endpoint: "POST /v1/bank-accounts (via SDK Link)",
         summary:
@@ -176,13 +235,57 @@ const mockClient: RootClient = {
             ? `Linked employer operating account (${input.bankName} ••${input.last4})${
                 input.achDebitAuthorized ? " with ACH debit auth" : ""
               }`
-            : `Linked employee payout account (${input.bankName} ••${input.last4})`,
+            : `Linked payee bank (${input.bankName} ••${input.last4})`,
         request: {
           owner: { type: input.ownerType, id: input.ownerId },
           processor: "root-link",
           ach_debit_authorization: input.achDebitAuthorized,
         },
         response: { id: token.id, last4: input.last4, status: "verified" },
+        status: "ok",
+      }),
+    };
+  },
+
+  async createPayee(input) {
+    await delay(350);
+    const payee: RootPayee = {
+      id: newId("py"),
+      subaccountId: input.subaccountId,
+      name: input.name,
+      email: input.email,
+      createdAt: new Date().toISOString(),
+    };
+    mockBackend.payees[payee.id] = payee;
+    saveMockBackend(mockBackend);
+    return {
+      resource: payee,
+      activity: activity({
+        endpoint: "POST /v1/payees",
+        summary: `Created payee ${input.name} on subaccount ${input.subaccountId}`,
+        request: {
+          subaccount_id: input.subaccountId,
+          name: input.name,
+          email: input.email,
+        },
+        response: { id: payee.id, status: "active" },
+        status: "ok",
+      }),
+    };
+  },
+
+  async listPayees({ subaccountId }) {
+    await delay(250);
+    const payees = Object.values(mockBackend.payees).filter(
+      (p) => p.subaccountId === subaccountId,
+    );
+    return {
+      payees,
+      activity: activity({
+        endpoint: "GET /v1/payees",
+        summary: `Listed ${payees.length} payee(s) on subaccount ${subaccountId}`,
+        request: { subaccount_id: subaccountId },
+        response: { count: payees.length, payees: payees.map((p) => p.id) },
         status: "ok",
       }),
     };
@@ -320,6 +423,37 @@ interface ApiTransfer {
   created_at: string;
   settled_at?: string;
 }
+interface ApiPayee {
+  id: string;
+  subaccount_id: string;
+  name: string;
+  email: string;
+  bank_token_id?: string;
+  created_at: string;
+}
+interface ApiListPayees {
+  payees: ApiPayee[];
+}
+
+function apiToPayee(p: ApiPayee): RootPayee {
+  return {
+    id: p.id,
+    subaccountId: p.subaccount_id,
+    name: p.name,
+    email: p.email,
+    bankTokenId: p.bank_token_id,
+    createdAt: p.created_at,
+  };
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "GET" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Root ${path} ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
 
 const apiClient: RootClient = {
   async createSubaccount({ employer }) {
@@ -344,7 +478,7 @@ const apiClient: RootClient = {
     };
   },
 
-  async linkBankAccount(input) {
+  async linkBankAccount(input, context) {
     // In a real integration, the browser would use the Root JS SDK to
     // exchange a public link-token for a persistent bank token.  Our
     // proxy mirrors that by accepting the SDK's linkSessionId and
@@ -368,16 +502,67 @@ const apiClient: RootClient = {
       achDebitAuthorized: out.ach_debit_authorized,
       createdAt: out.created_at,
     };
+    // If this bank is being linked for an employee payee, attach it.
+    let updatedPayee: RootPayee | undefined;
+    if (input.ownerType === "employee" && context?.payee) {
+      try {
+        const patched = await post<ApiPayee>(
+          `/payees/${context.payee.id}/bank`,
+          { bank_token_id: token.id },
+        );
+        updatedPayee = apiToPayee(patched);
+      } catch (err) {
+        /* non-fatal for demo: bank token still exists, just not attached */
+        console.warn("[root] payee bank attach failed", err);
+      }
+    }
     return {
       resource: token,
+      payee: updatedPayee,
       activity: activity({
         endpoint: "POST /v1/bank-accounts",
         summary:
           input.ownerType === "employer"
             ? `Linked employer operating account (${input.bankName} ••${input.last4})`
-            : `Linked employee payout account (${input.bankName} ••${input.last4})`,
+            : `Linked payee bank (${input.bankName} ••${input.last4})`,
         request: body,
         response: out,
+        status: "ok",
+      }),
+    };
+  },
+
+  async createPayee(input) {
+    const body = {
+      subaccount_id: input.subaccountId,
+      name: input.name,
+      email: input.email,
+    };
+    const out = await post<ApiPayee>("/payees", body);
+    return {
+      resource: apiToPayee(out),
+      activity: activity({
+        endpoint: "POST /v1/payees",
+        summary: `Created payee ${input.name}`,
+        request: body,
+        response: out,
+        status: "ok",
+      }),
+    };
+  },
+
+  async listPayees({ subaccountId }) {
+    const out = await get<ApiListPayees>(
+      `/payees?subaccount_id=${encodeURIComponent(subaccountId)}`,
+    );
+    const payees = out.payees.map(apiToPayee);
+    return {
+      payees,
+      activity: activity({
+        endpoint: "GET /v1/payees",
+        summary: `Listed ${payees.length} payee(s) on subaccount ${subaccountId}`,
+        request: { subaccount_id: subaccountId },
+        response: { count: payees.length },
         status: "ok",
       }),
     };
@@ -496,6 +681,18 @@ export function applyTransfer(
   if (result.subaccount)
     state.subaccounts[result.subaccount.id] = result.subaccount;
   pushActivity(state, result.activity);
+}
+
+export function applyPayee(
+  state: RootState,
+  result: ClientResult<RootPayee>,
+) {
+  state.payees[result.resource.id] = result.resource;
+  pushActivity(state, result.activity);
+}
+
+export function upsertPayees(state: RootState, payees: RootPayee[]) {
+  for (const p of payees) state.payees[p.id] = p;
 }
 
 export function pushActivity(state: RootState, entry: RootActivityEntry) {

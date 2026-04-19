@@ -7,8 +7,9 @@ import {
   CalendarCheck,
   Activity,
   LogOut,
+  Trash2,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore } from "../state/store";
 import { fmtUsd } from "../lib/money";
 
 const navItems = [
@@ -21,17 +22,32 @@ const navItems = [
 ];
 
 export default function Layout() {
-  const { state, reset } = useStore();
+  const { state, update, hardReset } = useStore();
+  const tenant = useActiveTenant();
   const nav = useNavigate();
-  const employer = state.employer;
-  const sub = employer
-    ? state.root.subaccounts[employer.rootSubaccountId]
-    : undefined;
+
+  if (!tenant) return null;
+  const { employer } = tenant;
+  const sub = state.root.subaccounts[employer.rootSubaccountId];
+  const adminEmail = state.session.adminEmail;
+  const currentAdmin =
+    tenant.admins.find((a) => a.email === adminEmail) ?? tenant.admins[0];
 
   function signOut() {
-    if (!confirm("Sign out and clear all local myPay + Root sandbox data?"))
+    update((draft) => {
+      draft.session = { domain: null, adminEmail: null };
+    });
+    nav("/login", { replace: true });
+  }
+
+  function factoryReset() {
+    if (
+      !confirm(
+        "Reset EVERYTHING?  This clears every tenant, every subaccount, every employee — and cannot be undone.",
+      )
+    )
       return;
-    reset();
+    hardReset();
     nav("/login", { replace: true });
   }
 
@@ -48,38 +64,49 @@ export default function Layout() {
           </p>
         </div>
 
-        {employer && (
-          <div className="px-5 py-4 border-b border-gray-800 space-y-2">
+        <div className="px-5 py-4 border-b border-gray-800 space-y-2">
+          {currentAdmin && (
             <div className="flex items-center gap-2">
               <img
-                src={employer.admin.picture}
+                src={currentAdmin.picture}
                 alt=""
                 className="w-8 h-8 rounded-full"
               />
               <div className="min-w-0">
                 <p className="text-sm text-white truncate">
-                  {employer.admin.name}
+                  {currentAdmin.name}
                 </p>
                 <p className="text-[11px] text-gray-400 truncate">
                   {employer.companyName}
                 </p>
               </div>
             </div>
-            <div className="rounded-md bg-gray-800/60 px-2.5 py-2 text-[11px]">
-              <p className="text-gray-400 uppercase tracking-wider mb-0.5">
-                Root subaccount
-              </p>
-              <p className="text-white font-semibold text-sm">
-                {sub ? fmtUsd(sub.balanceCents) : "—"}
-              </p>
-              {sub && sub.pendingInCents > 0 && (
-                <p className="text-amber-400 text-[10px] mt-0.5">
-                  {fmtUsd(sub.pendingInCents)} pending in
-                </p>
-              )}
-            </div>
+          )}
+          <div className="rounded-md bg-gray-800/60 px-2.5 py-1.5 text-[10px] flex items-center justify-between">
+            <span className="text-gray-400">Tenant</span>
+            <span className="text-white font-mono">
+              {employer.gsuiteDomain}
+            </span>
           </div>
-        )}
+          <div className="rounded-md bg-gray-800/60 px-2.5 py-2 text-[11px]">
+            <p className="text-gray-400 uppercase tracking-wider mb-0.5">
+              Root subaccount
+            </p>
+            <p className="text-white font-semibold text-sm">
+              {sub ? fmtUsd(sub.balanceCents) : "—"}
+            </p>
+            {sub && sub.pendingInCents > 0 && (
+              <p className="text-amber-400 text-[10px] mt-0.5">
+                {fmtUsd(sub.pendingInCents)} pending in
+              </p>
+            )}
+          </div>
+          {tenant.admins.length > 1 && (
+            <p className="text-[10px] text-gray-500">
+              {tenant.admins.length} admins on this tenant
+            </p>
+          )}
+        </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {navItems.map(({ to, icon: Icon, label }) => (
@@ -111,6 +138,13 @@ export default function Layout() {
             className="w-full flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors"
           >
             <LogOut size={12} /> Sign out
+          </button>
+          <button
+            onClick={factoryReset}
+            className="w-full flex items-center gap-2 text-[10px] text-gray-600 hover:text-red-400 transition-colors"
+            title="Wipe all myPay data (all tenants)"
+          >
+            <Trash2 size={10} /> Factory reset
           </button>
         </div>
       </aside>

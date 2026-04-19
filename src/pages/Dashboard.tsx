@@ -10,14 +10,15 @@ import {
   Activity,
   TrendingUp,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore } from "../state/store";
 import { fmtUsd, nextFriday } from "../lib/money";
 import { grossPerPeriodCents } from "../lib/payroll";
 
 export default function Dashboard() {
   const { state } = useStore();
-  const { employer, employees, payrollRuns } = state;
-  if (!employer) return null;
+  const tenant = useActiveTenant();
+  if (!tenant) return null;
+  const { employer, employees, payrollRuns } = tenant;
 
   const sub = state.root.subaccounts[employer.rootSubaccountId];
   const employerBank = Object.values(state.root.bankTokens).find(
@@ -65,11 +66,15 @@ export default function Dashboard() {
     },
   ];
 
+  const currentAdmin =
+    tenant.admins.find((a) => a.email === state.session.adminEmail) ??
+    tenant.admins[0];
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div>
         <h2 className="text-2xl font-bold">
-          Welcome back, {employer.admin.name.split(" ")[0]}
+          Welcome back, {currentAdmin?.name.split(" ")[0] ?? "admin"}
         </h2>
         <p className="text-sm text-gray-500 mt-1">
           Payroll for{" "}

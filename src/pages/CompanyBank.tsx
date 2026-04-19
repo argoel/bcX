@@ -7,15 +7,16 @@ import {
   CheckCircle2,
   AlertTriangle,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore } from "../state/store";
 import RootLinkModal from "../components/RootLinkModal";
 import { applyBankToken, pushActivity, rootClient } from "../services/root";
 
 export default function CompanyBank() {
   const { state, update } = useStore();
+  const tenant = useActiveTenant();
   const [open, setOpen] = useState(false);
-  const employer = state.employer;
-  if (!employer) return null;
+  if (!tenant) return null;
+  const { employer } = tenant;
 
   const banks = Object.values(state.root.bankTokens).filter(
     (b) => b.ownerType === "employer" && b.ownerId === employer.id,
@@ -44,7 +45,7 @@ export default function CompanyBank() {
     try {
       const out = await rootClient.linkBankAccount({
         ownerType: "employer",
-        ownerId: employer!.id,
+        ownerId: employer.id,
         bankName: result.bankName,
         accountType: result.accountType,
         last4: result.last4,

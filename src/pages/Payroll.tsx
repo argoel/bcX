@@ -10,7 +10,7 @@ import {
   XCircle,
   Wallet,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore, withActiveTenant } from "../state/store";
 import { fmtUsd, nextFriday } from "../lib/money";
 import { buildLineItem } from "../lib/payroll";
 import { applyTransfer, pushActivity, rootClient } from "../services/root";
@@ -18,21 +18,23 @@ import type { PayrollLineItem, PayrollRun } from "../types";
 
 export default function Payroll() {
   const { state, update } = useStore();
-  const employer = state.employer;
+  const tenant = useActiveTenant();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!employer) return null;
-  const sub = state.root.subaccounts[employer.rootSubaccountId];
-
-  // Build / reuse the current pay period's run.
+  // Build / reuse the current pay period's run.  (Hooks must run on
+  // every render so we compute this *before* the tenant null-guard.)
   const periodEnd = nextFriday();
-  const existingRun = state.payrollRuns.find((r) => r.periodEnd === periodEnd);
+  const employees = tenant?.employees ?? [];
+  const employer = tenant?.employer;
+  const existingRun = tenant?.payrollRuns.find(
+    (r) => r.periodEnd === periodEnd,
+  );
   const currentRun: PayrollRun | null = useMemo(() => {
     if (existingRun) return existingRun;
-    if (state.employees.length === 0) return null;
+    if (!employer || employees.length === 0) return null;
 
-    const lineItems = state.employees.map(buildLineItem);
+    const lineItems = employees.map(buildLineItem);
     const totalGrossCents = lineItems.reduce((s, l) => s + l.grossCents, 0);
     const totalNetCents = lineItems.reduce((s, l) => s + l.netCents, 0);
 
@@ -46,7 +48,10 @@ export default function Payroll() {
       totalNetCents,
       createdAt: new Date().toISOString(),
     };
-  }, [existingRun, state.employees, employer.id, periodEnd]);
+  }, [existingRun, employees, employer, periodEnd]);
+
+  if (!tenant || !employer) return null;
+  const sub = state.root.subaccounts[employer.rootSubaccountId];
 
   const payable = currentRun?.lineItems.filter((l) => l.status === "draft") ?? [];
   const totalDueCents = payable.reduce((s, l) => s + l.netCents, 0);
@@ -71,7 +76,7 @@ export default function Payroll() {
     const skipIds = new Set<string>();
     for (const li of currentRun.lineItems) {
       if (li.status !== "draft") continue;
-      const emp = state.employees.find((e) => e.id === li.employeeId);
+      const emp = employees.find((e) => e.id === li.employeeId);
       if (!emp || !emp.rootBankToken) {
         skipIds.add(li.employeeId);
       } else {
@@ -89,26 +94,27 @@ export default function Payroll() {
     //    don't mutate the existing store reference.
     const runId = currentRun.id;
     update((draft) => {
-      const existingIdx = draft.payrollRuns.findIndex((r) => r.id === runId);
-      const stored: PayrollRun = {
-        ...currentRun,
-        status: "running",
-        lineItems: currentRun.lineItems.map((li) => ({
-          ...li,
-          status: skipIds.has(li.employeeId) ? "skipped" : li.status,
-        })),
-      };
-      if (existingIdx >= 0) draft.payrollRuns[existingIdx] = stored;
-      else draft.payrollRuns.unshift(stored);
+      withActiveTenant(draft, (t) => {
+        const existingIdx = t.payrollRuns.findIndex((r) => r.id === runId);
+        const stored: PayrollRun = {
+          ...currentRun,
+          status: "running",
+          lineItems: currentRun.lineItems.map((li) => ({
+            ...li,
+            status: skipIds.has(li.employeeId) ? "skipped" : li.status,
+          })),
+        };
+        if (existingIdx >= 0) t.payrollRuns[existingIdx] = stored;
+        else t.payrollRuns.unshift(stored);
+      });
     });
 
     // 3. Disburse each task sequentially.  Track the subaccount locally so
     //    the next call's balance check sees the previous debit.
-    // Re-capture narrowed employer fields so TS keeps narrowing through awaits.
-    const { rootSubaccountId, companyName } = employer!;
+    const { rootSubaccountId, companyName } = employer;
     let runningSub = { ...sub };
     for (const task of tasks) {
-      const emp = state.employees.find((e) => e.id === task.employeeId);
+      const emp = employees.find((e) => e.id === task.employeeId);
       const bank = state.root.bankTokens[task.bankTokenId];
       if (!emp || !bank) continue;
 
@@ -129,23 +135,27 @@ export default function Payroll() {
 
         update((draft) => {
           applyTransfer(draft.root, out);
-          const run = draft.payrollRuns.find((r) => r.id === runId);
-          const target = run?.lineItems.find(
-            (l) => l.employeeId === emp.id,
-          );
-          if (target) {
-            target.transferId = out.resource.id;
-            target.status = "disbursing";
-          }
+          withActiveTenant(draft, (t) => {
+            const run = t.payrollRuns.find((r) => r.id === runId);
+            const target = run?.lineItems.find(
+              (l) => l.employeeId === emp.id,
+            );
+            if (target) {
+              target.transferId = out.resource.id;
+              target.status = "disbursing";
+            }
+          });
         });
       } catch (err) {
         const msg = (err as Error).message;
         update((draft) => {
-          const run = draft.payrollRuns.find((r) => r.id === runId);
-          const target = run?.lineItems.find(
-            (l) => l.employeeId === emp.id,
-          );
-          if (target) target.status = "failed";
+          withActiveTenant(draft, (t) => {
+            const run = t.payrollRuns.find((r) => r.id === runId);
+            const target = run?.lineItems.find(
+              (l) => l.employeeId === emp.id,
+            );
+            if (target) target.status = "failed";
+          });
           pushActivity(draft.root, {
             id: `act_${Math.random().toString(36).slice(2, 10)}`,
             at: new Date().toISOString(),
@@ -160,7 +170,7 @@ export default function Payroll() {
     setBusy(false);
   }
 
-  const recentRuns = state.payrollRuns.slice(0, 5);
+  const recentRuns = tenant.payrollRuns.slice(0, 5);
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -170,8 +180,8 @@ export default function Payroll() {
           <p className="text-sm text-gray-500 mt-1">
             Pay period ending{" "}
             <span className="font-medium text-gray-700">{periodEnd}</span> ·{" "}
-            {state.employees.length} employee
-            {state.employees.length === 1 ? "" : "s"}
+            {employees.length} employee
+            {employees.length === 1 ? "" : "s"}
           </p>
         </div>
         <button
@@ -266,7 +276,7 @@ export default function Payroll() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {currentRun.lineItems.map((li) => {
-                const emp = state.employees.find(
+                const emp = employees.find(
                   (e) => e.id === li.employeeId,
                 );
                 if (!emp) return null;

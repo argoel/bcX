@@ -10,11 +10,19 @@ import {
   DollarSign,
   Trash2,
   CheckCircle2,
+  RefreshCw,
+  Loader2,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useActiveTenant, useStore, withActiveTenant } from "../state/store";
 import { fmtUsd } from "../lib/money";
 import { grossPerPeriodCents } from "../lib/payroll";
-import { applyBankToken, rootClient } from "../services/root";
+import {
+  applyBankToken,
+  applyPayee,
+  pushActivity,
+  rootClient,
+  upsertPayees,
+} from "../services/root";
 import RootLinkModal from "../components/RootLinkModal";
 import type { Employee, PayFrequency } from "../types";
 
@@ -29,36 +37,110 @@ const emptyForm = {
 
 export default function Employees() {
   const { state, update } = useStore();
+  const tenant = useActiveTenant();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [linkFor, setLinkFor] = useState<Employee | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
-  const employees = state.employees;
+  if (!tenant) return null;
+  const employees = tenant.employees;
+  const subaccountId = tenant.employer.rootSubaccountId;
 
-  function addEmployee(e: React.FormEvent) {
+  async function addEmployee(e: React.FormEvent) {
     e.preventDefault();
     if (!form.firstName || !form.lastName || !form.email) return;
-    update((draft) => {
-      draft.employees.push({
-        id: `emp_${Date.now().toString(36)}`,
-        firstName: form.firstName,
-        lastName: form.lastName,
+    setCreating(true);
+    try {
+      // 1. Create the payee on Root (source of truth).
+      const payeeRes = await rootClient.createPayee({
+        subaccountId,
+        name: `${form.firstName} ${form.lastName}`,
         email: form.email,
-        jobTitle: form.jobTitle || "Team Member",
-        annualSalary: form.annualSalary,
-        payFrequency: form.payFrequency,
-        createdAt: new Date().toISOString(),
       });
-    });
-    setForm(emptyForm);
-    setShowForm(false);
+      // 2. Persist the local HCM record referencing the Root payee.
+      update((draft) => {
+        applyPayee(draft.root, payeeRes);
+        withActiveTenant(draft, (t) => {
+          t.employees.push({
+            id: `emp_${Date.now().toString(36)}`,
+            rootPayeeId: payeeRes.resource.id,
+            firstName: form.firstName,
+            lastName: form.lastName,
+            email: form.email,
+            jobTitle: form.jobTitle || "Team Member",
+            annualSalary: form.annualSalary,
+            payFrequency: form.payFrequency,
+            createdAt: new Date().toISOString(),
+          });
+        });
+      });
+      setForm(emptyForm);
+      setShowForm(false);
+    } catch (err) {
+      alert(`Could not create payee on Root: ${(err as Error).message}`);
+    } finally {
+      setCreating(false);
+    }
   }
 
   function removeEmployee(id: string) {
     if (!confirm("Remove this employee from myPay?")) return;
     update((draft) => {
-      draft.employees = draft.employees.filter((e) => e.id !== id);
+      withActiveTenant(draft, (t) => {
+        t.employees = t.employees.filter((e) => e.id !== id);
+      });
     });
+  }
+
+  async function syncFromRoot() {
+    setSyncing(true);
+    try {
+      const list = await rootClient.listPayees({ subaccountId });
+      update((draft) => {
+        upsertPayees(draft.root, list.payees);
+        pushActivity(draft.root, list.activity);
+        withActiveTenant(draft, (t) => {
+          for (const p of list.payees) {
+            const hit = t.employees.find(
+              (e) => e.rootPayeeId === p.id || e.email === p.email,
+            );
+            if (hit) {
+              hit.rootPayeeId = p.id;
+              if (p.bankTokenId && !hit.rootBankToken) {
+                hit.rootBankToken = p.bankTokenId;
+                const bt = draft.root.bankTokens[p.bankTokenId];
+                if (bt) hit.bankDisplay = `${bt.bankName} ••${bt.last4}`;
+              }
+              continue;
+            }
+            const [firstName, ...rest] = p.name.split(" ");
+            const newEmp: Employee = {
+              id: `emp_${Math.random().toString(36).slice(2, 10)}`,
+              rootPayeeId: p.id,
+              firstName: firstName ?? p.name,
+              lastName: rest.join(" "),
+              email: p.email,
+              jobTitle: "Imported from Root",
+              annualSalary: 0,
+              payFrequency: "weekly",
+              createdAt: p.createdAt,
+            };
+            if (p.bankTokenId) {
+              newEmp.rootBankToken = p.bankTokenId;
+              const bt = draft.root.bankTokens[p.bankTokenId];
+              if (bt) newEmp.bankDisplay = `${bt.bankName} ••${bt.last4}`;
+            }
+            t.employees.push(newEmp);
+          }
+        });
+      });
+    } catch (err) {
+      alert(`Sync failed: ${(err as Error).message}`);
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function onBankLinked(
@@ -70,21 +152,30 @@ export default function Employees() {
     },
   ) {
     try {
-      const out = await rootClient.linkBankAccount({
-        ownerType: "employee",
-        ownerId: employee.id,
-        bankName: result.bankName,
-        accountType: result.accountType,
-        last4: result.last4,
-        achDebitAuthorized: false,
-      });
+      const payee = employee.rootPayeeId
+        ? state.root.payees[employee.rootPayeeId]
+        : undefined;
+      const out = await rootClient.linkBankAccount(
+        {
+          ownerType: "employee",
+          ownerId: employee.rootPayeeId ?? employee.id,
+          bankName: result.bankName,
+          accountType: result.accountType,
+          last4: result.last4,
+          achDebitAuthorized: false,
+        },
+        payee ? { payee } : undefined,
+      );
       update((draft) => {
         applyBankToken(draft.root, out);
-        const target = draft.employees.find((e) => e.id === employee.id);
-        if (target) {
-          target.rootBankToken = out.resource.id;
-          target.bankDisplay = `${result.bankName} ••${result.last4}`;
-        }
+        if (out.payee) draft.root.payees[out.payee.id] = out.payee;
+        withActiveTenant(draft, (t) => {
+          const target = t.employees.find((e) => e.id === employee.id);
+          if (target) {
+            target.rootBankToken = out.resource.id;
+            target.bankDisplay = `${result.bankName} ••${result.last4}`;
+          }
+        });
       });
     } catch (err) {
       alert(`Link failed: ${(err as Error).message}`);
@@ -102,20 +193,50 @@ export default function Employees() {
             Root
           </p>
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700"
-        >
-          <Plus size={16} /> Add Employee
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={syncFromRoot}
+            disabled={syncing}
+            className="inline-flex items-center gap-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 px-3 py-2.5 rounded-lg disabled:opacity-50"
+            title="Pull the latest payees from Root"
+          >
+            {syncing ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <RefreshCw size={14} />
+            )}
+            Sync from Root
+          </button>
+          <button
+            onClick={() => setShowForm(true)}
+            className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700"
+          >
+            <Plus size={16} /> Add Employee
+          </button>
+        </div>
       </div>
 
       {employees.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-10 text-center">
-          <Users size={32} className="mx-auto text-gray-300 mb-2" />
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-10 text-center space-y-3">
+          <Users size={32} className="mx-auto text-gray-300" />
           <p className="text-sm text-gray-500">
-            No employees yet — add your first teammate to start payroll.
+            No employees yet.  Add someone or pull your existing payees from
+            Root.
           </p>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              onClick={syncFromRoot}
+              disabled={syncing}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 px-3 py-1.5 rounded-md disabled:opacity-50"
+            >
+              {syncing ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <RefreshCw size={12} />
+              )}
+              Sync from Root
+            </button>
+          </div>
         </div>
       ) : (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -315,10 +436,16 @@ export default function Employees() {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-                disabled={!form.firstName || !form.lastName || !form.email}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                disabled={
+                  creating ||
+                  !form.firstName ||
+                  !form.lastName ||
+                  !form.email
+                }
               >
-                Add Employee
+                {creating && <Loader2 size={14} className="animate-spin" />}
+                {creating ? "Creating payee…" : "Add Employee"}
               </button>
             </div>
           </form>
