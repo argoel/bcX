@@ -18,12 +18,15 @@ export default defineConfig(({ mode }) => {
   // NOT prefixed with VITE_ so it stays server-side.
   const env = loadEnv(mode, process.cwd(), "");
   const secret = env.ROOT_SANDBOX_API_KEY;
-  // Host only, no path — e.g. "https://api.useroot.com".
-  const target = env.ROOT_SANDBOX_BASE_URL || "https://api.useroot.com";
-  // Path prefix Root mounts its REST API under.  Based on the 404 response
-  // seen at sandbox (`"path":"…/api/v1/subaccounts"`), Root lives under
-  // "/api/v1".  Override with ROOT_SANDBOX_API_PREFIX if needed.
-  const prefix = env.ROOT_SANDBOX_API_PREFIX || "/api/v1";
+  // Full base URL of Root's API, INCLUDING any path prefix Root mounts
+  // its REST under.  Root's sandbox lives at https://api.useroot.com/api,
+  // so that's the default.  Everything after this prefix is the
+  // resource path (`/subaccounts`, `/payees`, etc.).
+  const target = env.ROOT_SANDBOX_BASE_URL || "https://api.useroot.com/api";
+  // Optional extra prefix inserted between the base URL and the
+  // resource path — leave empty unless Root introduces versioning you
+  // need to pin (e.g. "/v1").
+  const prefix = env.ROOT_SANDBOX_API_PREFIX ?? "";
 
   const rootProxy: ProxyOptions = {
     target,
