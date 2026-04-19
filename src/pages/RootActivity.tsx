@@ -9,8 +9,9 @@ import {
 } from "lucide-react";
 import { useStore } from "../state/store";
 import {
-  ROOT_SANDBOX_API_KEY,
+  ROOT_SANDBOX_API_KEY_DISPLAY,
   ROOT_SANDBOX_BASE_URL,
+  USE_MOCK,
 } from "../services/root";
 
 export default function RootActivity() {
@@ -57,18 +58,34 @@ export default function RootActivity() {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-        <InfoRow
-          icon={<Globe size={14} />}
-          label="Base URL"
-          value={ROOT_SANDBOX_BASE_URL}
-        />
-        <InfoRow
-          icon={<Key size={14} />}
-          label="API key"
-          value={ROOT_SANDBOX_API_KEY}
-          secret
-        />
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-gray-500 uppercase tracking-wider">
+            Mode
+          </span>
+          <span
+            className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+              USE_MOCK
+                ? "bg-amber-50 text-amber-700"
+                : "bg-emerald-50 text-emerald-700"
+            }`}
+          >
+            {USE_MOCK ? "Client-side mock" : "Live sandbox via /api/root"}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <InfoRow
+            icon={<Globe size={14} />}
+            label="Base URL"
+            value={ROOT_SANDBOX_BASE_URL}
+          />
+          <InfoRow
+            icon={<Key size={14} />}
+            label="API key"
+            value={ROOT_SANDBOX_API_KEY_DISPLAY}
+            secret
+          />
+        </div>
       </div>
 
       {entries.length === 0 ? (

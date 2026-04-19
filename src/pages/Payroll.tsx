@@ -13,7 +13,7 @@ import {
 import { useStore } from "../state/store";
 import { fmtUsd, nextFriday } from "../lib/money";
 import { buildLineItem } from "../lib/payroll";
-import { initiateDisbursement } from "../services/root";
+import { applyTransfer, pushActivity, rootClient } from "../services/root";
 import type { PayrollLineItem, PayrollRun } from "../types";
 
 export default function Payroll() {
@@ -65,50 +65,95 @@ export default function Payroll() {
       return;
     }
 
+    // 1. Partition line items up-front into "to process" vs "skipped".
+    type Task = { employeeId: string; netCents: number; bankTokenId: string };
+    const tasks: Task[] = [];
+    const skipIds = new Set<string>();
+    for (const li of currentRun.lineItems) {
+      if (li.status !== "draft") continue;
+      const emp = state.employees.find((e) => e.id === li.employeeId);
+      if (!emp || !emp.rootBankToken) {
+        skipIds.add(li.employeeId);
+      } else {
+        tasks.push({
+          employeeId: emp.id,
+          netCents: li.netCents,
+          bankTokenId: emp.rootBankToken,
+        });
+      }
+    }
+
     setBusy(true);
 
-    // Persist the run (in case it was freshly-generated) and mark it running.
+    // 2. Persist a running skeleton of the run.  Clone line items so we
+    //    don't mutate the existing store reference.
+    const runId = currentRun.id;
     update((draft) => {
-      const i = draft.payrollRuns.findIndex((r) => r.id === currentRun.id);
+      const existingIdx = draft.payrollRuns.findIndex((r) => r.id === runId);
       const stored: PayrollRun = {
         ...currentRun,
         status: "running",
+        lineItems: currentRun.lineItems.map((li) => ({
+          ...li,
+          status: skipIds.has(li.employeeId) ? "skipped" : li.status,
+        })),
       };
-      if (i >= 0) draft.payrollRuns[i] = stored;
+      if (existingIdx >= 0) draft.payrollRuns[existingIdx] = stored;
       else draft.payrollRuns.unshift(stored);
+    });
 
-      // Disburse each payable line item.
-      for (const li of stored.lineItems) {
-        if (li.status !== "draft") continue;
-        const emp = draft.employees.find((e) => e.id === li.employeeId);
-        if (!emp || !emp.rootBankToken) {
-          li.status = "skipped";
-          continue;
-        }
-        try {
-          const t = initiateDisbursement(draft.root, {
+    // 3. Disburse each task sequentially.  Track the subaccount locally so
+    //    the next call's balance check sees the previous debit.
+    let runningSub = { ...sub };
+    for (const task of tasks) {
+      const emp = state.employees.find((e) => e.id === task.employeeId);
+      const bank = state.root.bankTokens[task.bankTokenId];
+      if (!emp || !bank) continue;
+
+      try {
+        const out = await rootClient.initiateDisbursement(
+          {
             subaccountId: employer.rootSubaccountId,
-            employeeBankTokenId: emp.rootBankToken,
-            amountCents: li.netCents,
+            employeeBankTokenId: bank.id,
+            amountCents: task.netCents,
             employeeId: emp.id,
-            payrollRunId: stored.id,
+            payrollRunId: runId,
             memo: `${employer.companyName} payroll ${periodEnd}`,
             rail: "ach",
-          });
-          li.transferId = t.id;
-          li.status = "disbursing";
-        } catch (e) {
-          li.status = "failed";
-          draft.root.activity.unshift({
+          },
+          { subaccount: runningSub, bank },
+        );
+        if (out.subaccount) runningSub = out.subaccount;
+
+        update((draft) => {
+          applyTransfer(draft.root, out);
+          const run = draft.payrollRuns.find((r) => r.id === runId);
+          const target = run?.lineItems.find(
+            (l) => l.employeeId === emp.id,
+          );
+          if (target) {
+            target.transferId = out.resource.id;
+            target.status = "disbursing";
+          }
+        });
+      } catch (err) {
+        const msg = (err as Error).message;
+        update((draft) => {
+          const run = draft.payrollRuns.find((r) => r.id === runId);
+          const target = run?.lineItems.find(
+            (l) => l.employeeId === emp.id,
+          );
+          if (target) target.status = "failed";
+          pushActivity(draft.root, {
             id: `act_${Math.random().toString(36).slice(2, 10)}`,
             at: new Date().toISOString(),
             endpoint: "POST /v1/transfers (disbursement)",
-            summary: `Disbursement to ${emp.firstName} ${emp.lastName} failed: ${(e as Error).message}`,
+            summary: `Disbursement to ${emp.firstName} ${emp.lastName} failed: ${msg}`,
             status: "error",
           });
-        }
+        });
       }
-    });
+    }
 
     setBusy(false);
   }
