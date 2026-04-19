@@ -44,7 +44,7 @@ export default function CompanyBank() {
     try {
       const out = await rootClient.linkBankAccount({
         ownerType: "employer",
-        ownerId: employer.id,
+        ownerId: employer!.id,
         bankName: result.bankName,
         accountType: result.accountType,
         last4: result.last4,

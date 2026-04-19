@@ -104,6 +104,8 @@ export default function Payroll() {
 
     // 3. Disburse each task sequentially.  Track the subaccount locally so
     //    the next call's balance check sees the previous debit.
+    // Re-capture narrowed employer fields so TS keeps narrowing through awaits.
+    const { rootSubaccountId, companyName } = employer!;
     let runningSub = { ...sub };
     for (const task of tasks) {
       const emp = state.employees.find((e) => e.id === task.employeeId);
@@ -113,12 +115,12 @@ export default function Payroll() {
       try {
         const out = await rootClient.initiateDisbursement(
           {
-            subaccountId: employer.rootSubaccountId,
+            subaccountId: rootSubaccountId,
             employeeBankTokenId: bank.id,
             amountCents: task.netCents,
             employeeId: emp.id,
             payrollRunId: runId,
-            memo: `${employer.companyName} payroll ${periodEnd}`,
+            memo: `${companyName} payroll ${periodEnd}`,
             rail: "ach",
           },
           { subaccount: runningSub, bank },
