@@ -111,7 +111,8 @@ export default function Payroll() {
 
     // 3. Disburse each task sequentially.  Track the subaccount locally so
     //    the next call's balance check sees the previous debit.
-    const { rootSubaccountId, companyName } = employer;
+    // `!` — guarded at top of component; TS resets narrowing in async closures.
+    const { rootSubaccountId, companyName } = employer!;
     let runningSub = { ...sub };
     for (const task of tasks) {
       const emp = employees.find((e) => e.id === task.employeeId);
