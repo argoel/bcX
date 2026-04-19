@@ -127,7 +127,7 @@ export default function RootActivity() {
                     {new Date(e.at).toLocaleTimeString()}
                   </span>
                 </button>
-                {isOpen && (e.request || e.response) && (
+                {isOpen && (e.request !== undefined || e.response !== undefined) && (
                   <div className="px-5 pb-4 pt-0.5 grid grid-cols-1 md:grid-cols-2 gap-4">
                     {e.request !== undefined && (
                       <Block title="Request" data={e.request} />

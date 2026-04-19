@@ -54,7 +54,9 @@ export default function Funding() {
       setError("Enter an amount greater than zero.");
       return;
     }
-    const subaccount = state.root.subaccounts[employer.rootSubaccountId];
+    // Re-capture to keep TS narrowing through the async await points.
+    const { rootSubaccountId, companyName } = employer!;
+    const subaccount = state.root.subaccounts[rootSubaccountId];
     if (!subaccount) {
       setError("Subaccount not found.");
       return;
@@ -63,10 +65,10 @@ export default function Funding() {
     try {
       const out = await rootClient.initiateAchDebit(
         {
-          subaccountId: employer.rootSubaccountId,
+          subaccountId: rootSubaccountId,
           employerBankTokenId: primary.id,
           amountCents,
-          memo: `myPay prefunding — ${employer.companyName}`,
+          memo: `myPay prefunding — ${companyName}`,
         },
         { subaccount, bank: primary },
       );
